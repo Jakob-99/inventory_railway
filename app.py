@@ -1,10 +1,12 @@
 import os
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 
+load_dotenv()  # Læs .env-filen automatisk
+
 app = Flask(__name__)
 
-# --- Databaseforbindelse ---
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DATABASE_HOST"),
@@ -14,75 +16,86 @@ def get_db_connection():
         port=int(os.getenv("DATABASE_PORT")),
         sslmode=os.getenv("DB_SSLMODE", "require")
     )
-
-# --- HTML (simpel side) ---
+# --- Simpelt HTML UI ---
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="da">
 <head>
     <meta charset="UTF-8">
-    <title>Produktopslag</title>
+    <title>Barcode Lookup</title>
     <style>
-        body { font-family: Arial; margin: 50px; background: #f7f7f7; }
+        body { font-family: Arial; background: #f4f4f4; text-align: center; margin-top: 100px; }
         h1 { color: #333; }
-        input, button { padding: 10px; font-size: 16px; }
-        #result { margin-top: 20px; font-size: 18px; }
+        .card { display: inline-block; background: white; padding: 20px 40px; border-radius: 10px; box-shadow: 0 2px 10px #ccc; }
+        .result { margin-top: 20px; font-size: 20px; }
     </style>
 </head>
 <body>
-    <h1>Slå produkt op</h1>
-    <input id="barcode" type="text" placeholder="Indtast stregkode">
-    <button onclick="lookup()">Søg</button>
-    <div id="result"></div>
-
-    <script>
-    async function lookup() {
-        const code = document.getElementById('barcode').value;
-        const res = await fetch('/api/barcode', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({barcode: code})
-        });
-        const data = await res.json();
-        const result = document.getElementById('result');
-        if (res.ok) {
-            result.innerHTML = `<b>${data.product_name}</b> - ${data.price} kr.`;
-        } else {
-            result.innerHTML = data.error || 'Fejl ved opslag';
-        }
-    }
-    </script>
+    <div class="card">
+        <h1>📦 Produktopslag</h1>
+        {% if product %}
+            <div class="result">
+                <b>Produkt:</b> {{ product }}<br>
+                <b>Pris:</b> {{ price }} kr.
+            </div>
+        {% elif message %}
+            <div class="result">{{ message }}</div>
+        {% else %}
+            <div class="result">Venter på scanning...</div>
+        {% endif %}
+    </div>
 </body>
 </html>
 """
 
+# --- Gem sidste produkt i hukommelsen ---
+last_product = None
+last_price = None
+last_message = None
+
 @app.route("/")
 def home():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(HTML_PAGE, product=last_product, price=last_price, message=last_message)
 
 @app.route("/api/barcode", methods=["POST"])
-def get_product():
+def receive_barcode():
+    global last_product, last_price, last_message
+
     data = request.get_json()
     barcode = data.get("barcode")
 
     if not barcode:
+        last_product = None
+        last_price = None
+        last_message = "Ingen barcode modtaget"
         return jsonify({"error": "Ingen barcode modtaget"}), 400
 
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT code, product_name, price FROM barcodes WHERE code = %s;", (barcode,))
-        product = cur.fetchone()
+        cur.execute("SELECT barcode, description, unitprice FROM products WHERE barcode = %s;", (barcode,))
+        result = cur.fetchone()
         cur.close()
         conn.close()
-    except Exception as e:
-        return jsonify({"error": "Databasefejl"}), 500
 
-    if product:
-        code, name, price = product
-        return jsonify({"code": code, "product_name": name, "price": price})
-    else:
-        return jsonify({"error": "Produkt ikke fundet"}), 404
+        if result:
+            last_product, last_price = result
+            last_message = None
+            print(f"✅ Fundet: {last_product} - {last_price} kr.")
+            return jsonify({"message": "OK"}), 200
+        else:
+            last_product = None
+            last_price = None
+            last_message = "Produkt ikke fundet"
+            print("❌ Produkt ikke fundet")
+            return jsonify({"error": "Produkt ikke fundet"}), 404
+
+    except Exception as e:
+        last_product = None
+        last_price = None
+        last_message = "Databasefejl"
+        print("⚠️ Databasefejl:", e)
+        return jsonify({"error": "Databasefejl"}), 500
 
 
 if __name__ == "__main__":
