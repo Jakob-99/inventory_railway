@@ -6,7 +6,6 @@ app = Flask(__name__)
 
 # --- Databaseforbindelse ---
 def get_db_connection():
-    """Opretter forbindelse til Railway PostgreSQL."""
     return psycopg2.connect(
         host=os.getenv("DATABASE_HOST"),
         database=os.getenv("DATABASE_NAME"),
@@ -22,7 +21,7 @@ HTML_PAGE = """
 <html lang="da">
 <head>
     <meta charset="UTF-8">
-    <title>Barcode Lookup</title>
+    <title>Produktopslag</title>
     <style>
         body { font-family: Arial; background: #f4f4f4; text-align: center; margin-top: 100px; }
         h1 { color: #333; }
@@ -48,14 +47,16 @@ HTML_PAGE = """
 </html>
 """
 
-# --- Gem sidste produkt i hukommelsen ---
+# --- Gem sidste resultat i hukommelsen ---
 last_product = None
 last_price = None
 last_message = None
 
+
 @app.route("/")
 def home():
     return render_template_string(HTML_PAGE, product=last_product, price=last_price, message=last_message)
+
 
 @app.route("/api/barcode", methods=["POST"])
 def receive_barcode():
@@ -73,15 +74,17 @@ def receive_barcode():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT description, unitprice FROM barcodes WHERE code = %s;", (barcode,))
+        cur.execute("SELECT description, unitprice FROM products WHERE barcode = %s;", (barcode,))
         result = cur.fetchone()
         cur.close()
         conn.close()
 
         if result:
-            last_product, last_price = result
+            description, price = result
+            last_product = description
+            last_price = price
             last_message = None
-            print(f"✅ Fundet: {last_product} - {last_price} kr.")
+            print(f"✅ Fundet: {description} - {price} kr.")
             return jsonify({"message": "OK"}), 200
         else:
             last_product = None
@@ -95,7 +98,7 @@ def receive_barcode():
         last_price = None
         last_message = "Databasefejl"
         print("⚠️ Databasefejl:", e)
-        return jsonify({"error": "Databasefejl"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
