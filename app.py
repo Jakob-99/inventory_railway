@@ -43,6 +43,11 @@ HTML_PAGE = """
             <div class="result">Venter på scanning...</div>
         {% endif %}
     </div>
+<script>
+setInterval(() => {
+  window.location.reload();
+}, 2000);
+</script>
 </body>
 </html>
 """
@@ -86,6 +91,7 @@ def receive_barcode():
             last_message = None
             print(f"✅ Fundet: {description} - {price} kr.")
             return jsonify({"message": "OK"}), 200
+        
         else:
             last_product = None
             last_price = None
