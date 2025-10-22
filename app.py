@@ -1,147 +1,148 @@
-# app.py (Minimal version til test af databaseforbindelse og miljøvariabler)
 import os
 from dotenv import load_dotenv
-from flask import Flask, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 import psycopg2
 
-# Dette er kun til lokal test, da Railway selv injicerer variablerne.
-# Vi beholder det for at undgå lokale fejl.
-load_dotenv() 
+# --- Indlæs miljøvariabler ---
+load_dotenv()
 
 app = Flask(__name__)
 
-DB_VARIABLE_NAMES = [
-    'DATABASE_HOST', 'DATABASE_NAME', 'DATABASE_USER', 
-    'DATABASE_PASSWORD', 'DATABASE_PORT', 'DB_SSLMODE'
-]
+# --- Database helper ---
+def get_db_connection():
+    """
+    Opretter forbindelse til PostgreSQL-databasen vha. miljøvariabler.
+    Railway stiller selv disse værdier til rådighed.
+    """
+    return psycopg2.connect(
+        host=os.getenv("DATABASE_HOST"),
+        database=os.getenv("DATABASE_NAME"),
+        user=os.getenv("DATABASE_USER"),
+        password=os.getenv("DATABASE_PASSWORD"),
+        port=int(os.getenv("DATABASE_PORT")),
+        sslmode=os.getenv("DB_SSLMODE", "require")
+    )
 
-def get_db_config_and_env_status():
-    """Henter databasekonfiguration fra miljøvariabler og logger dem."""
-    config = {}
-    env_status = {}
-    
-    for name in DB_VARIABLE_NAMES: # loop gennem environment variabler og gem dem i env_status dict
-        value = os.environ.get(name)
-        env_status[name] = f"'{value}'" if value else "❌ MANGES (eller er tom)"
-        
-        # Behandling for PORT nummer: heltal, så skal konverteres til int
-        if name == 'DATABASE_PORT' and value:
-             try:
-                 config['port'] = int(value)
-             except ValueError:
-                 config['port'] = value # Beholder strengen, hvis konvertering fejler
+# --- Database init (oprettes automatisk ved første start) ---
+def init_db():
+    """
+    Sikrer at tabellen 'barcodes' eksisterer i databasen.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS barcodes (
+                id SERIAL PRIMARY KEY,
+                code TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Tabellen 'barcodes' er klar.")
+    except Exception as e:
+        print("❌ DB init fejl:", e)
 
-        # De andre variabler
-        elif name == 'DATABASE_HOST':
-             config['host'] = value
-        elif name == 'DATABASE_NAME':
-             config['database'] = value
-        elif name == 'DATABASE_USER':
-             config['user'] = value
-        elif name == 'DATABASE_PASSWORD':
-             config['password'] = value
-        elif name == 'DB_SSLMODE':
-             config['sslmode'] = value
-        
-    return config, env_status
+# Kør initialisering ved start
+init_db()
 
-def fetch_first_product(config):
-    # Forsøg at oprette forbindelse og hent første række
-    connection = None
-    result = None
-    error = None
-    
-    # Validering: Tjekker, at host er en streng (ikke None) og port er et heltal
-    is_valid_config = isinstance(config.get('host'), str) and isinstance(config.get('port'), int)
+# --- REST endpoint til modtagelse af barcode-data ---
+@app.route("/api/barcode", methods=["POST"])
+def receive_barcode():
+    """
+    Modtager barcode fra den lokale scanner (JSON) og gemmer i databasen.
+    """
+    data = request.get_json()
+    barcode = data.get("barcode") if data else None
 
-    if not is_valid_config:
-        error = f"Konfigurationsfejl: Host er ikke gyldig (type: {type(config.get('host'))}) eller Port er ikke et heltal (type: {type(config.get('port'))}). Tjek jeres Railway variabler."
-        return result, error
+    if not barcode:
+        return jsonify({"error": "Manglende 'barcode' felt"}), 400
 
     try:
-        # Overfør nøglerne: host, database, user, password, port, sslmode til psycopg2 connect
-        connection = psycopg2.connect(**config)
-        
-        with connection.cursor() as cursor:
-            # Hent de første kolonner og 1 række til test
-            cursor.execute("SELECT * FROM products LIMIT 1;") # kørsel af SQL forespørgsel
-            row = cursor.fetchone()
-            col_names = [desc[0] for desc in cursor.description]
-            
-            if row:
-                result = dict(zip(col_names, row))
-            else:
-                result = "Tabellen 'products' er tom."
-                
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO barcodes (code) VALUES (%s);", (barcode,))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        print(f"✅ Barcode gemt: {barcode}")
+        return jsonify({"message": f"Barcode '{barcode}' gemt ✅"}), 201
+
     except Exception as e:
-        error = f"Databaseforbindelsesfejl: {e}"
-        
-    finally:
-        if connection:
-            connection.close()
-            
-    return result, error
+        print("❌ Databasefejl:", e)
+        return jsonify({"error": f"Databasefejl: {e}"}), 500
 
-@app.route('/')
-def test_db():
-    config, env_status = get_db_config_and_env_status()
-    
-    result, db_error = fetch_first_product(config)
-    
-    # --- Vis miljøstatus og resultat i HTML ---
-    
-    env_table = "".join([
-        f"<li class='flex justify-between border-b py-2'><span class='font-mono text-gray-600'>{name}</span><span class='font-bold {('text-red-500' if 'MANGES' in status or 'None' in status else 'text-green-600')}'>{status}</span></li>" 
-        for name, status in env_status.items()
-    ])
+# --- UI: viser alle gemte barcodes ---
+@app.route("/")
+def index():
+    """
+    Viser en simpel UI-side med alle barcodes og scanningstidspunkter.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT code, created_at FROM barcodes ORDER BY created_at DESC;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        rows = []
+        print("DB læsefejl:", e)
 
-    # Omdan konfiguration til en pænere streng for debug
-    config_display = ", ".join([f"{k}: {v!r}" for k, v in config.items()])
-
-    if db_error:
-        db_result_html = f"<h2 class='text-2xl text-red-600 mb-4'>❌ Databaseforbindelsesfejl</h2><p class='bg-red-100 p-3 rounded text-red-800 break-words whitespace-pre-wrap'>{db_error}</p>"
-    elif result:
-        db_result_html = f"<h2 class='text-2xl text-green-600 mb-4'>✅ Forbindelse og Forespørgsel Lykkedes</h2><pre class='bg-gray-100 p-3 rounded overflow-auto whitespace-pre-wrap'>{result}</pre>"
-    else:
-        db_result_html = f"<h2 class='text-2xl text-yellow-600 mb-4'>⚠️ Database Test Resultat</h2><p class='bg-yellow-100 p-3 rounded text-yellow-800'>{result}</p>"
-
-    # inline HTML til browser
-    html_content = f"""
-    <html>
+    html = """
+    <!DOCTYPE html>
+    <html lang="da">
     <head>
-        <title>Railway DB Debugger</title>
-        <script src="https://cdn.tailwindcss.com"></script>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          /* Sikrer Inter-fonten */
-          body {{ font-family: 'Inter', sans-serif; }}
-        </style>
+        <title>📦 Barcode Dashboard</title>
+        <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body class="bg-gray-50 p-4 sm:p-8">
-        <div class="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow-xl">
-            <h1 class="text-2xl sm:text-3xl font-bold mb-6 text-center text-indigo-700">Railway Miljø & Database Debugger</h1>
-            
-            <div class="mb-8 border p-4 rounded-lg bg-blue-50 shadow-inner">
-                <h2 class="text-xl font-semibold mb-3 text-blue-700">1. Miljøvariabler Fundet (os.environ.get)</h2>
-                <ul class="list-none p-0">{env_table}</ul>
-            </div>
-            
-            <div class="border p-4 rounded-lg bg-white shadow">
-                <h2 class="text-xl font-semibold mb-3 text-indigo-700">2. Database Test Resultat</h2>
-                {db_result_html}
-            </div>
-            
-            <p class='mt-6 text-xs text-gray-500 text-center break-words'>
-                Konfigurationsdata brugt (Host, Port er afgørende for typen): 
-                <br><span class="font-mono">{config_display}</span>
+    <body class="bg-gray-100 text-gray-800">
+        <div class="max-w-3xl mx-auto my-10 bg-white p-6 rounded-xl shadow">
+            <h1 class="text-3xl font-bold text-indigo-700 mb-4 text-center">📦 Barcode Dashboard</h1>
+            <p class="text-center text-gray-500 mb-6">
+                Viser data sendt fra den lokale stregkodescanner via REST API
             </p>
+
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-indigo-100">
+                        <th class="p-2 border-b">Stregkode</th>
+                        <th class="p-2 border-b">Tidspunkt</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for code, created_at in rows %}
+                        <tr class="hover:bg-gray-50">
+                            <td class="p-2 border-b font-mono">{{ code }}</td>
+                            <td class="p-2 border-b text-sm text-gray-500">{{ created_at }}</td>
+                        </tr>
+                    {% else %}
+                        <tr>
+                            <td colspan="2" class="text-center py-4 text-gray-400">
+                                Ingen data scannet endnu
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div class="mt-6 text-center">
+                <p class="text-xs text-gray-400">
+                    Flask app kører på Railway &middot; Data gemmes i PostgreSQL
+                </p>
+            </div>
         </div>
     </body>
     </html>
     """
-        
-    return render_template_string(html_content)
+    return render_template_string(html, rows=rows)
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=True, host='0.0.0.0', port=port)
+# --- Start app ---
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
