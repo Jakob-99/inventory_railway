@@ -6,6 +6,7 @@ app = Flask(__name__)
 
 # --- Databaseforbindelse ---
 def get_db_connection():
+    """Opretter forbindelse til Railway PostgreSQL."""
     return psycopg2.connect(
         host=os.getenv("DATABASE_HOST"),
         database=os.getenv("DATABASE_NAME"),
@@ -14,6 +15,7 @@ def get_db_connection():
         port=int(os.getenv("DATABASE_PORT")),
         sslmode=os.getenv("DB_SSLMODE", "require")
     )
+
 # --- Simpelt HTML UI ---
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -71,7 +73,7 @@ def receive_barcode():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT barcode, description, unitprice FROM products WHERE barcode = %s;", (barcode,))
+        cur.execute("SELECT description, unitprice FROM barcodes WHERE code = %s;", (barcode,))
         result = cur.fetchone()
         cur.close()
         conn.close()
