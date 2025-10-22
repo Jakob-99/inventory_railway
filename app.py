@@ -1,12 +1,10 @@
 import os
-from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 
-load_dotenv()  # Læs .env-filen automatisk
-
 app = Flask(__name__)
 
+# --- Databaseforbindelse ---
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DATABASE_HOST"),
